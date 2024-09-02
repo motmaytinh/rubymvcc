@@ -72,21 +72,38 @@ class Database
     tx
   end
 
-  def complete_transaction(:transaction, :transaction_state)
+  def complete_transaction(transaction, transaction_state)
     debug('completing transaction', transaction.id)
 
     transaction.state = transaction_state
     @transactions[transaction.id] = transaction
   end
 
-  def transaction_state(:tx_id)
+  def transaction_state(tx_id)
     tx = @transactions[tx_id]
     assert(tx, 'valid transaction')
     tx
   end
 
-  def assert_valid_transaction(:transaction)
+  def assert_valid_transaction(transaction)
     assert(transaction.id > 0, 'valid id')
     assert(transaction_state(transaction.id).state == TransactionState::InProgressTransaction)
+  end
+
+  def new_connection = Connection.new(self, nil)
+end
+
+Connection = Struct.new(:tx, :db) do
+  def exec_command(cmd, *args)
+    debug(command, args)
+
+    # TODO
+    ''
+  end
+
+  def must_exec_command(cmd, args)
+    res = exec_command(cmd, args)
+    assert_eq(res, '', 'unexpected error')
+    res
   end
 end
