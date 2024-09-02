@@ -42,11 +42,33 @@ Transaction = Data.define(:isolation_level, :id, :state, :inprogress, :writeset,
 
 class Database
   attr_reader :default_isolation, :store, :transactions, :next_transaction_id
-  # attr_accessor :store
+
   def initialize(default_isolation)
     @default_isolation = default_isolation
-    @store = Hash.new
-    @transactions = Hash.new
+    @store = {}
+    @transactions = {}
     @next_transaction_id = 1
+  end
+
+  def inprogress
+    transactions.select { |_, tx| tx.state == TransactionState::InProgressTransaction }.keys
+  end
+
+  def new_transaction
+    tx = Transaction.new(
+      @default_isolation,
+      @next_transaction_id,
+      TransactionState::InProgressTransaction,
+      inprogress,
+      {},
+      {}
+    )
+
+    @transactions[tx.id] = tx
+    @next_transaction_id += 1
+
+    # debug("starting transaction", tx.id)
+
+    tx
   end
 end
