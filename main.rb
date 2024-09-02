@@ -38,7 +38,7 @@ module IsolationLevel
 end
 
 Value = Data.define(:tx_start_id, :tx_end_id, :value)
-Transaction = Data.define(:isolation_level, :id, :state, :inprogress, :writeset, :readset)
+Transaction = Struct.new(:isolation_level, :id, :state, :inprogress, :writeset, :readset)
 
 class Database
   attr_reader :default_isolation, :store, :transactions, :next_transaction_id
@@ -70,5 +70,23 @@ class Database
     # debug("starting transaction", tx.id)
 
     tx
+  end
+
+  def complete_transaction(:transaction, :transaction_state)
+    debug('completing transaction', transaction.id)
+
+    transaction.state = transaction_state
+    @transactions[transaction.id] = transaction
+  end
+
+  def transaction_state(:tx_id)
+    tx = @transactions[tx_id]
+    assert(tx, 'valid transaction')
+    tx
+  end
+
+  def assert_valid_transaction(:transaction)
+    assert(transaction.id > 0, 'valid id')
+    assert(transaction_state(transaction.id).state == TransactionState::InProgressTransaction)
   end
 end
