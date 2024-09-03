@@ -89,9 +89,23 @@ class Database
         complete_transaction(transaction, TransactionState::AbortedTransaction)
         raise RuntimeError, 'write-write conflict'
       end
+
+      # Serializable Isolation imposes the additional constraint that
+      # no transaction A may commit after reading any of the same
+      # keys as transaction B has written and committed during
+      # transaction A's life, or vice-versa.
+      puts transaction
+      conflict_fn2 = ->(t1, t2) { (t1.writeset & t2.readset).length > 0 || (t1.readset & t2.writeset).length > 0 }
+      if transaction.isolation_level == IsolationLevel::SerializableIsolation &&
+        has_conflict(transaction, conflict_fn2)
+        complete_transaction(transaction, TransactionState::AbortedTransaction)
+        raise RuntimeError, 'read-write conflict'
+      end
     end
+
     transaction.state = transaction_state
     @transactions[transaction.id] = transaction
+    nil
   end
 
   def transaction_state(tx_id)

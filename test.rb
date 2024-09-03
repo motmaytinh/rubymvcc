@@ -187,4 +187,31 @@ class MyTest < Test::Unit::TestCase
     c3.must_exec_command('set', 'y', 'hey')
     c3.must_exec_command('commit', nil)
   end
+
+  def test_serializable_isolation
+    database = Database.new(IsolationLevel::SerializableIsolation)
+
+    c1 = database.new_connection
+    c1.must_exec_command('begin', nil)
+
+    c2 = database.new_connection()
+    c2.must_exec_command('begin', nil)
+
+    c3 = database.new_connection()
+    c3.must_exec_command('begin', nil)
+
+    c1.must_exec_command('set', 'x', 'hey')
+    c1.must_exec_command('commit', nil)
+
+    assert_raise RuntimeError do
+      c2.must_exec_command('get', 'x')
+    end
+
+    assert_raise RuntimeError do
+      c2.must_exec_command('commit', nil)
+    end
+
+    c3.must_exec_command('set', 'y', 'hey')
+    c3.must_exec_command('commit', nil)
+  end
 end
