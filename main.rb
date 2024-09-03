@@ -279,8 +279,4 @@ class Connection
       ''
     end
   end
-
-  def must_exec_command(cmd, *args)
-    exec_command(cmd, *args)
-  end
 end
