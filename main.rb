@@ -15,8 +15,8 @@ OptionParser.new do |opts|
   opts.on('-d', '--debug')
 end.parse!(into: params)
 
-# $DEBUG = params[:debug]
-$DEBUG = false
+$DEBUG = params[:debug]
+# $DEBUG = false
 
 def debug(*a)
   if !$DEBUG
