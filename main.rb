@@ -78,6 +78,18 @@ class Database
   def complete_transaction(transaction, transaction_state)
     debug('completing transaction', transaction.id)
 
+    if transaction_state == TransactionState::CommittedTransaction
+      # Snapshot Isolation imposes the additional constraint that
+      # no transaction A may commit after writing any of the same
+      # keys as transaction B has written and committed during
+      # transaction A's life.
+      conflict_fn = ->(t1, t2) { (t1.writeset & t2.writeset).length > 0 }
+      if transaction.isolation_level == IsolationLevel::SnapshotIsolation &&
+          has_conflict(transaction, conflict_fn)
+        complete_transaction(transaction, TransactionState::AbortedTransaction)
+        raise RuntimeError, 'write-write conflict'
+      end
+    end
     transaction.state = transaction_state
     @transactions[transaction.id] = transaction
   end
@@ -135,8 +147,8 @@ class Database
     # Snapshot Isolation and Serializable will do additional
     # checks at commit time.
     assert(transaction.isolation_level == IsolationLevel::RepeatableReadIsolation ||
-          transaction.isolation == IsolationLevel::SnapshotIsolation ||
-          transaction.isolation == IsolationLevel::SerializableIsolation, "invalid isolation level")
+          transaction.isolation_level == IsolationLevel::SnapshotIsolation ||
+          transaction.isolation_level == IsolationLevel::SerializableIsolation, "invalid isolation level")
     # Ignore values from transactions started after this one.
     if value.tx_start_id > transaction.id
       return false
@@ -168,6 +180,36 @@ class Database
     end
 
     return true
+  end
+
+  def has_conflict(t1, conflict_fn)
+
+    # First see if there is any conflict with transactions that
+    # were in progress when this one started.
+    t1.inprogress.each do |id|
+      next unless @transactions.key? id
+      t2 = @transactions[id]
+      if t2.state == TransactionState::CommittedTransaction
+        if conflict_fn.call(t1, t2)
+          return true
+        end
+      end
+    end
+
+    # Then see if there is any conflict with transactions that
+    # started and committed after this one started.
+
+    for id in t1.id...@next_transaction_id do
+      next unless @transactions.key? id
+      t2 = @transactions[id]
+      if t2.state == TransactionState::CommittedTransaction
+        if conflict_fn(t1, t2)
+          return true
+        end
+      end
+    end
+
+    return false
   end
 
   def new_connection = Connection.new(self, nil)
