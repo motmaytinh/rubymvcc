@@ -70,7 +70,7 @@ class Database
     @transactions[tx.id] = tx
     @next_transaction_id += 1
 
-    # debug("starting transaction", tx.id)
+    debug("starting transaction", tx.id)
 
     tx
   end
@@ -100,6 +100,31 @@ class Database
     if transaction.isolation_level == IsolationLevel::ReadUncommittedIsolation
       # We must merely make sure the value has not been deleted.
       return value.tx_end_id == 0
+    end
+
+    # Read Committed means we are allowed to read any values that
+    # are committed at the point in time where we read.
+    if transaction.isolation_level == IsolationLevel::ReadCommittedIsolation
+      # If the value was created by a transaction that is
+      # not committed, and not this current transaction,
+      # it's no good.
+      if value.tx_start_id != transaction.id &&
+      transaction_state(value.tx_start_id).state != TransactionState::CommittedTransaction
+        return false
+      end
+      # If the value was deleted in this transaction, it's no good.
+      if value.tx_end_id == transaction.id
+        return false
+      end
+
+      # Or if the value was deleted in some other committed
+      # transaction, it's no good.
+      if value.tx_end_id > 0 &&
+      transaction_state(value.tx_end_id).state == TransactionState::CommittedTransaction
+        return false
+      end
+      # Otherwise the value is good.
+      return true
     end
 
     assert(false, "unsupported isolation level")
