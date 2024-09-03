@@ -224,59 +224,83 @@ class Connection
   attr_reader :db, :tx
 
   def initialize(db, tx)
-    @tx = tx
     @db = db
+    @tx = tx
   end
 
   def exec_command(command, *args)
     debug(command, args)
 
     case command
-    when 'begin'
-      assert_eq(@tx, nil, 'no running transaction')
-      @tx = @db.new_transaction
-      @db.assert_valid_transaction(@tx)
-      @tx.id
-    when 'abort'
-      @db.assert_valid_transaction(@tx)
-      @db.complete_transaction(@tx, TransactionState::AbortedTransaction)
-      @tx = nil
-    when 'commit'
-      @db.assert_valid_transaction(@tx)
-      @db.complete_transaction(@tx, TransactionState::CommittedTransaction)
-      @tx = nil
-    when 'set', 'delete'
-      @db.assert_valid_transaction(@tx)
-      key = args[0]
-      found = false
-      @db.store[key].reverse_each do |value|
-        debug(value, @tx, @db.visible?(@tx, value))
-        if @db.visible?(@tx, value)
-          value.tx_end_id = @tx.id
-          found = true
-        end
-      end
-      if command == 'delete' and !found
-        raise RuntimeError, 'cannot delete key that does not exist'
-      end
-      @tx.writeset.add(key)
-      # And add a new version if it's a set command.
-      if command == "set"
-        value = args[1]
-        @db.store[key] << Value.new(@tx.id, 0, value)
-      end
-      # Delete ok.
-    when 'get'
-      @db.assert_valid_transaction(@tx)
-      key = args[0]
-      @tx.readset.add(key)
-      @db.store[key].reverse_each do |value|
-        debug(value, @tx, @db.visible?(@tx, value))
-        return value.value if @db.visible?(@tx, value)
-      end
-      raise RuntimeError, 'cannot get key that does not exist'
-    else
-      ''
+    when 'begin' then begin_transaction
+    when 'abort' then abort_transaction
+    when 'commit' then commit_transaction
+    when 'set' then set_value(*args)
+    when 'delete' then delete_value(*args)
+    when 'get' then get_value(*args)
+    else raise RuntimeError, 'unsupported command'
     end
+  end
+
+  private
+
+  def begin_transaction
+    assert_eq(@tx, nil, 'no running transaction')
+    @tx = @db.new_transaction
+    @db.assert_valid_transaction(@tx)
+    @tx.id
+  end
+
+  def abort_transaction
+    @db.assert_valid_transaction(@tx)
+    @db.complete_transaction(@tx, TransactionState::AbortedTransaction)
+    @tx = nil
+  end
+
+  def commit_transaction
+    @db.assert_valid_transaction(@tx)
+    @db.complete_transaction(@tx, TransactionState::CommittedTransaction)
+    @tx = nil
+  end
+
+  def set_value(key, value)
+    handle_write_operation(key, 'set') do
+      @db.store[key] << Value.new(@tx.id, 0, value)
+    end
+  end
+
+  def delete_value(key)
+    handle_write_operation(key, 'delete') do
+      raise RuntimeError, 'cannot delete key that does not exist' unless @db.store[key].any?
+    end
+  end
+
+  def get_value(key)
+    @db.assert_valid_transaction(@tx)
+    @tx.readset.add(key)
+    @db.store[key].reverse_each do |value|
+      debug(value, @tx, @db.visible?(@tx, value))
+      return value.value if @db.visible?(@tx, value)
+    end
+    raise RuntimeError, 'cannot get key that does not exist'
+  end
+
+  def handle_write_operation(key, operation)
+    @db.assert_valid_transaction(@tx)
+    found = false
+
+    @db.store[key].reverse_each do |value|
+      debug(value, @tx, @db.visible?(@tx, value))
+      if @db.visible?(@tx, value)
+        value.tx_end_id = @tx.id
+        found = true
+      end
+    end
+
+    yield if block_given?
+
+    @tx.writeset.add(key)
+
+    raise RuntimeError, "cannot #{operation} key that does not exist" if operation == 'delete' && !found
   end
 end
