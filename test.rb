@@ -7,7 +7,7 @@ class MyTest < Test::Unit::TestCase
     database = Database.new(IsolationLevel::ReadUncommittedIsolation)
 
     c1 = database.new_connection
-    c1.must_exec_command('begin', nil)
+    tx_id = c1.must_exec_command('begin', nil)
 
     c2 = database.new_connection()
     c2.must_exec_command('begin', nil)
@@ -24,14 +24,14 @@ class MyTest < Test::Unit::TestCase
 
     # And if we delete, that should be respected.
     res = c1.must_exec_command('delete', 'x')
-    assert_equal('', res, 'c1 cannot delete x')
+    assert_equal(nil, res, 'c1 cannot delete x')
 
-    res = c1.exec_command('get', 'x')
-    assert_equal(res, '', 'c1 sees no x')
-    assert_equal(err.Error(), 'cannot get key that does not exist', 'c1 sees no x')
+    assert_raise RuntimeError do
+      c1.exec_command('get', 'x')
+    end
 
-    res, err = c2.exec_command('get', 'x')
-    assert_equal(res, '', 'c2 sees no x')
-    assert_equal(err.Error(), 'cannot get key that does not exist)
+    assert_raise RuntimeError do
+      c2.exec_command('get', 'x')
+    end
   end
 end

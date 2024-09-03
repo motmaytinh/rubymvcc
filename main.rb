@@ -16,7 +16,7 @@ OptionParser.new do |opts|
 end.parse!(into: params)
 
 # $DEBUG = params[:debug]
-$DEBUG = true
+$DEBUG = false
 
 def debug(*a)
   if !$DEBUG
@@ -54,7 +54,7 @@ class Database
   end
 
   def inprogress
-    transactions.select { |_, tx| tx.state == TransactionState::InProgressTransaction }.keys
+    @transactions.select { |_, tx| tx.state == TransactionState::InProgressTransaction }.keys
   end
 
   def new_transaction
@@ -130,12 +130,10 @@ class Connection
       @db.assert_valid_transaction(@tx)
       @db.complete_transaction(@tx, TransactionState::AbortedTransaction)
       @tx = nil
-      ''
     when 'commit'
       @db.assert_valid_transaction(@tx)
       @db.complete_transaction(@tx, TransactionState::CommittedTransaction)
       @tx = nil
-      ''
     when 'set', 'delete'
       @db.assert_valid_transaction(@tx)
       key = args[0]
@@ -148,8 +146,7 @@ class Connection
         end
       end
       if command == 'delete' and !found
-        puts 'cannot delete key that does not exist'
-        return nil
+        raise RuntimeError, 'cannot delete key that does not exist'
       end
       @tx.writeset.add(key)
       # And add a new version if it's a set command.
@@ -158,7 +155,6 @@ class Connection
         @db.store[key] << Value.new(@tx.id, 0, value)
       end
       # Delete ok.
-      ''
     when 'get'
       @db.assert_valid_transaction(@tx)
       key = args[0]
@@ -167,15 +163,13 @@ class Connection
         debug(value, @tx, @db.visible?(@tx, value))
         return value.value if @db.visible?(@tx, value)
       end
-      nil
+      raise RuntimeError, 'cannot delete key that does not exist'
     else
       ''
     end
   end
 
   def must_exec_command(cmd, *args)
-    res = exec_command(cmd, *args)
-    # assert_eq(res, '', 'unexpected error')
-    res
+    exec_command(cmd, *args)
   end
 end
