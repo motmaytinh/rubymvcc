@@ -79,28 +79,7 @@ class Database
     debug('completing transaction', transaction.id)
 
     if transaction_state == TransactionState::CommittedTransaction
-      # Snapshot Isolation imposes the additional constraint that
-      # no transaction A may commit after writing any of the same
-      # keys as transaction B has written and committed during
-      # transaction A's life.
-      conflict_fn = ->(t1, t2) { (t1.writeset & t2.writeset).length > 0 }
-      if transaction.isolation_level == IsolationLevel::SnapshotIsolation &&
-          has_conflict(transaction, conflict_fn)
-        complete_transaction(transaction, TransactionState::AbortedTransaction)
-        raise RuntimeError, 'write-write conflict'
-      end
-
-      # Serializable Isolation imposes the additional constraint that
-      # no transaction A may commit after reading any of the same
-      # keys as transaction B has written and committed during
-      # transaction A's life, or vice-versa.
-      puts transaction
-      conflict_fn2 = ->(t1, t2) { (t1.writeset & t2.readset).length > 0 || (t1.readset & t2.writeset).length > 0 }
-      if transaction.isolation_level == IsolationLevel::SerializableIsolation &&
-        has_conflict(transaction, conflict_fn2)
-        complete_transaction(transaction, TransactionState::AbortedTransaction)
-        raise RuntimeError, 'read-write conflict'
-      end
+      handle_conflict(transaction)
     end
 
     transaction.state = transaction_state
@@ -115,118 +94,130 @@ class Database
   end
 
   def assert_valid_transaction(transaction)
-    assert(transaction.id > 0, 'valid id')
+    assert(transaction.id.positive?, 'valid id')
     assert(transaction_state(transaction.id).state == TransactionState::InProgressTransaction, 'in progress')
   end
 
   def visible?(transaction, value)
-    # Read Uncommitted means we simply read the last value
-    # written. Even if the transaction that wrote this value has
-    # not committed, and even if it has aborted.
-    if transaction.isolation_level == IsolationLevel::ReadUncommittedIsolation
-      # We must merely make sure the value has not been deleted.
-      return value.tx_end_id == 0
+    case transaction.isolation_level
+    when IsolationLevel::ReadUncommittedIsolation
+      # Read Uncommitted means we simply read the last value
+      # written. Even if the transaction that wrote this value has
+      # not committed, and even if it has aborted.
+      value.tx_end_id.zero?
+    when IsolationLevel::ReadCommittedIsolation
+      # Read Committed means we are allowed to read any values that
+      # are committed at the point in time where we read.
+      read_committed_visible?(transaction, value)
+    else
+      # Repeatable Read, Snapshot Isolation, and Serializable
+      # further restricts Read Committed so only versions from
+      # transactions that completed before this one started are
+      # visible.
+      #
+      # Snapshot Isolation and Serializable will do additional
+      # checks at commit time.
+      repeatable_read_visible?(transaction, value)
     end
-
-    # Read Committed means we are allowed to read any values that
-    # are committed at the point in time where we read.
-    if transaction.isolation_level == IsolationLevel::ReadCommittedIsolation
-      # If the value was created by a transaction that is
-      # not committed, and not this current transaction,
-      # it's no good.
-      if value.tx_start_id != transaction.id &&
-      transaction_state(value.tx_start_id).state != TransactionState::CommittedTransaction
-        return false
-      end
-      # If the value was deleted in this transaction, it's no good.
-      if value.tx_end_id == transaction.id
-        return false
-      end
-
-      # Or if the value was deleted in some other committed
-      # transaction, it's no good.
-      if value.tx_end_id > 0 &&
-      transaction_state(value.tx_end_id).state == TransactionState::CommittedTransaction
-        return false
-      end
-      # Otherwise the value is good.
-      return true
-    end
-
-    # Repeatable Read, Snapshot Isolation, and Serializable
-    # further restricts Read Committed so only versions from
-    # transactions that completed before this one started are
-    # visible.
-
-    # Snapshot Isolation and Serializable will do additional
-    # checks at commit time.
-    assert(transaction.isolation_level == IsolationLevel::RepeatableReadIsolation ||
-          transaction.isolation_level == IsolationLevel::SnapshotIsolation ||
-          transaction.isolation_level == IsolationLevel::SerializableIsolation, "invalid isolation level")
-    # Ignore values from transactions started after this one.
-    if value.tx_start_id > transaction.id
-      return false
-    end
-    # Ignore values created from transactions in progress when
-    # this one started.
-    if transaction.inprogress.include? value.tx_start_id
-      return false
-    end
-
-    # If the value was created by a transaction that is not
-    # committed, and not this current transaction, it's no good.
-    if transaction_state(value.tx_start_id).state != TransactionState::CommittedTransaction &&
-      value.tx_start_id != transaction.id
-      return false
-    end
-
-    # If the value was deleted in this transaction, it's no good.
-    if value.tx_end_id == transaction.id
-      return false
-    end
-
-    # Or if the value was deleted in some other committed
-    # transaction that started before this one, it's no good.
-    if value.tx_end_id < transaction.id && value.tx_end_id > 0 &&
-      transaction_state(value.tx_end_id).state == TransactionState::CommittedTransaction &&
-      !(transaction.inprogress.include? value.tx_end_id)
-        return false
-    end
-
-    return true
   end
 
   def has_conflict(t1, conflict_fn)
-
     # First see if there is any conflict with transactions that
     # were in progress when this one started.
-    t1.inprogress.each do |id|
-      next unless @transactions.key? id
-      t2 = @transactions[id]
-      if t2.state == TransactionState::CommittedTransaction
-        if conflict_fn.call(t1, t2)
-          return true
-        end
-      end
-    end
-
-    # Then see if there is any conflict with transactions that
-    # started and committed after this one started.
-
-    for id in t1.id...@next_transaction_id do
-      next unless @transactions.key? id
-      t2 = @transactions[id]
-      if t2.state == TransactionState::CommittedTransaction
-        if conflict_fn(t1, t2)
-          return true
-        end
-      end
-    end
-
-    return false
+    in_progress_conflict?(t1, conflict_fn) ||
+      # Then see if there is any conflict with transactions that
+      # started and committed after this one started.
+      committed_after_conflict?(t1, conflict_fn)
   end
 
   def new_connection = Connection.new(self, nil)
+
+  private
+
+  def handle_conflict(transaction)
+    # Snapshot Isolation imposes the additional constraint that
+    # no transaction A may commit after writing any of the same
+    # keys as transaction B has written and committed during
+    # transaction A's life.
+    if transaction.isolation_level == IsolationLevel::SnapshotIsolation
+      snapshot_conflict_fn = ->(t1, t2) { (t1.writeset & t2.writeset).any? }
+      if has_conflict(transaction, snapshot_conflict_fn)
+        abort_transaction(transaction, 'write-write conflict')
+      end
+    end
+
+    # Serializable Isolation imposes the additional constraint that
+    # no transaction A may commit after reading any of the same
+    # keys as transaction B has written and committed during
+    # transaction A's life, or vice-versa.
+    if transaction.isolation_level == IsolationLevel::SerializableIsolation
+      serializable_conflict_fn = ->(t1, t2) { (t1.writeset & t2.readset).any? || (t1.readset & t2.writeset).any? }
+      if has_conflict(transaction, serializable_conflict_fn)
+        abort_transaction(transaction, 'read-write conflict')
+      end
+    end
+  end
+
+  def abort_transaction(transaction, message)
+    complete_transaction(transaction, TransactionState::AbortedTransaction)
+    raise RuntimeError, message
+  end
+
+  def read_committed_visible?(transaction, value)
+    # If the value was created by a transaction that is
+    # not committed, and not this current transaction,
+    # it's no good.
+    return false if value.tx_start_id != transaction.id &&
+                    transaction_state(value.tx_start_id).state != TransactionState::CommittedTransaction
+
+    # If the value was deleted in this transaction, it's no good.
+    return false if value.tx_end_id == transaction.id
+
+    # Or if the value was deleted in some other committed
+    # transaction, it's no good.
+    return false if value.tx_end_id.positive? &&
+                    transaction_state(value.tx_end_id).state == TransactionState::CommittedTransaction
+
+    # Otherwise the value is good.
+    true
+  end
+
+  def repeatable_read_visible?(transaction, value)
+    # Ignore values from transactions started after this one.
+    return false if value.tx_start_id > transaction.id
+
+    # Ignore values created from transactions in progress when
+    # this one started.
+    return false if transaction.inprogress.include?(value.tx_start_id)
+
+    # If the value was created by a transaction that is not
+    # committed, and not this current transaction, it's no good.
+    return false if transaction_state(value.tx_start_id).state != TransactionState::CommittedTransaction &&
+                    value.tx_start_id != transaction.id
+
+    # If the value was deleted in this transaction, it's no good.
+    return false if value.tx_end_id == transaction.id
+
+    # Or if the value was deleted in some other committed
+    # transaction that started before this one, it's no good.
+    return false if value.tx_end_id < transaction.id && value.tx_end_id.positive? &&
+                    transaction_state(value.tx_end_id).state == TransactionState::CommittedTransaction &&
+                    !transaction.inprogress.include?(value.tx_end_id)
+
+    true
+  end
+
+  def in_progress_conflict?(t1, conflict_fn)
+    t1.inprogress.any? do |id|
+      @transactions.key?(id) && @transactions[id].state == TransactionState::CommittedTransaction && conflict_fn.call(t1, @transactions[id])
+    end
+  end
+
+  def committed_after_conflict?(t1, conflict_fn)
+    (t1.id...@next_transaction_id).any? do |id|
+      @transactions.key?(id) && @transactions[id].state == TransactionState::CommittedTransaction && conflict_fn.call(t1, @transactions[id])
+    end
+  end
 end
 
 class Connection
