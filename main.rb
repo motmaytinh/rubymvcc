@@ -15,12 +15,15 @@ OptionParser.new do |opts|
   opts.on('-d', '--debug')
 end.parse!(into: params)
 
-$DEBUG = params[:debug]
+# $DEBUG = params[:debug]
+$DEBUG = true
 
 def debug(*a)
-  if !DEBUG
+  if !$DEBUG
     return
   end
+
+  puts "[DEBUG] #{a}"
 end
 
 module TransactionState
@@ -37,7 +40,7 @@ module IsolationLevel
   SerializableIsolation = :serializable
 end
 
-Value = Data.define(:tx_start_id, :tx_end_id, :value)
+Value = Struct.new(:tx_start_id, :tx_end_id, :value)
 Transaction = Struct.new(:isolation_level, :id, :state, :inprogress, :writeset, :readset)
 
 class Database
@@ -45,8 +48,8 @@ class Database
 
   def initialize(default_isolation)
     @default_isolation = default_isolation
-    @store = {}
-    @transactions = {}
+    @store = Hash.new { |h, k| h[k] = [] }
+    @transactions = Hash.new { |h, k| h[k] = [] }
     @next_transaction_id = 1
   end
 
@@ -60,8 +63,8 @@ class Database
       @next_transaction_id,
       TransactionState::InProgressTransaction,
       inprogress,
-      {},
-      {}
+      Set.new,
+      Set.new
     )
 
     @transactions[tx.id] = tx
@@ -87,23 +90,92 @@ class Database
 
   def assert_valid_transaction(transaction)
     assert(transaction.id > 0, 'valid id')
-    assert(transaction_state(transaction.id).state == TransactionState::InProgressTransaction)
+    assert(transaction_state(transaction.id).state == TransactionState::InProgressTransaction, 'in progress')
+  end
+
+  def visible?(transaction, value)
+    # Read Uncommitted means we simply read the last value
+    # written. Even if the transaction that wrote this value has
+    # not committed, and even if it has aborted.
+    if transaction.isolation_level == IsolationLevel::ReadUncommittedIsolation
+      # We must merely make sure the value has not been deleted.
+      return value.tx_end_id == 0
+    end
+
+    assert(false, "unsupported isolation level")
+    return false
   end
 
   def new_connection = Connection.new(self, nil)
 end
 
-Connection = Struct.new(:tx, :db) do
-  def exec_command(cmd, *args)
-    debug(command, args)
+class Connection
+  attr_reader :db, :tx
 
-    # TODO
-    ''
+  def initialize(db, tx)
+    @tx = tx
+    @db = db
   end
 
-  def must_exec_command(cmd, args)
-    res = exec_command(cmd, args)
-    assert_eq(res, '', 'unexpected error')
+  def exec_command(command, *args)
+    debug(command, args)
+
+    case command
+    when 'begin'
+      assert_eq(@tx, nil, 'no running transaction')
+      @tx = @db.new_transaction
+      @db.assert_valid_transaction(@tx)
+      @tx.id
+    when 'abort'
+      @db.assert_valid_transaction(@tx)
+      @db.complete_transaction(@tx, TransactionState::AbortedTransaction)
+      @tx = nil
+      ''
+    when 'commit'
+      @db.assert_valid_transaction(@tx)
+      @db.complete_transaction(@tx, TransactionState::CommittedTransaction)
+      @tx = nil
+      ''
+    when 'set', 'delete'
+      @db.assert_valid_transaction(@tx)
+      key = args[0]
+      found = false
+      @db.store[key].reverse_each do |value|
+        debug(value, @tx, @db.visible?(@tx, value))
+        if @db.visible?(@tx, value)
+          value.tx_end_id = @tx.id
+          found = true
+        end
+      end
+      if command == 'delete' and !found
+        puts 'cannot delete key that does not exist'
+        return nil
+      end
+      @tx.writeset.add(key)
+      # And add a new version if it's a set command.
+      if command == "set"
+        value = args[1]
+        @db.store[key] << Value.new(@tx.id, 0, value)
+      end
+      # Delete ok.
+      ''
+    when 'get'
+      @db.assert_valid_transaction(@tx)
+      key = args[0]
+      @tx.readset.add(key)
+      @db.store[key].reverse_each do |value|
+        debug(value, @tx, @db.visible?(@tx, value))
+        return value.value if @db.visible?(@tx, value)
+      end
+      nil
+    else
+      ''
+    end
+  end
+
+  def must_exec_command(cmd, *args)
+    res = exec_command(cmd, *args)
+    # assert_eq(res, '', 'unexpected error')
     res
   end
 end
