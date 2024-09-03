@@ -127,8 +127,47 @@ class Database
       return true
     end
 
-    assert(false, "unsupported isolation level")
-    return false
+    # Repeatable Read, Snapshot Isolation, and Serializable
+    # further restricts Read Committed so only versions from
+    # transactions that completed before this one started are
+    # visible.
+
+    # Snapshot Isolation and Serializable will do additional
+    # checks at commit time.
+    assert(transaction.isolation_level == IsolationLevel::RepeatableReadIsolation ||
+          transaction.isolation == IsolationLevel::SnapshotIsolation ||
+          transaction.isolation == IsolationLevel::SerializableIsolation, "invalid isolation level")
+    # Ignore values from transactions started after this one.
+    if value.tx_start_id > transaction.id
+      return false
+    end
+    # Ignore values created from transactions in progress when
+    # this one started.
+    if transaction.inprogress.include? value.tx_start_id
+      return false
+    end
+
+    # If the value was created by a transaction that is not
+    # committed, and not this current transaction, it's no good.
+    if transaction_state(value.tx_start_id).state != TransactionState::CommittedTransaction &&
+      value.tx_start_id != transaction.id
+      return false
+    end
+
+    # If the value was deleted in this transaction, it's no good.
+    if value.tx_end_id == transaction.id
+      return false
+    end
+
+    # Or if the value was deleted in some other committed
+    # transaction that started before this one, it's no good.
+    if value.tx_end_id < transaction.id && value.tx_end_id > 0 &&
+      transaction_state(value.tx_end_id).state == TransactionState::CommittedTransaction &&
+      !(transaction.inprogress.include? value.tx_end_id)
+        return false
+    end
+
+    return true
   end
 
   def new_connection = Connection.new(self, nil)
@@ -188,7 +227,7 @@ class Connection
         debug(value, @tx, @db.visible?(@tx, value))
         return value.value if @db.visible?(@tx, value)
       end
-      raise RuntimeError, 'cannot delete key that does not exist'
+      raise RuntimeError, 'cannot get key that does not exist'
     else
       ''
     end
