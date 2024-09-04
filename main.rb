@@ -2,12 +2,14 @@
 require 'optparse'
 require 'set'
 
-def assert(condition, msg)
-  raise RuntimeError, msg unless condition
-end
+module Helper
+  def assert(condition, msg)
+    raise RuntimeError, msg unless condition
+  end
 
-def assert_eq(a, b, prefix)
-  raise RuntimeError, "#{prefix}: '#{a}' != '#{b}'" unless a == b
+  def assert_eq(a, b, prefix)
+    raise RuntimeError, "#{prefix}: '#{a}' != '#{b}'" unless a == b
+  end
 end
 
 params = {}
@@ -44,6 +46,7 @@ Value = Struct.new(:tx_start_id, :tx_end_id, :value)
 Transaction = Struct.new(:isolation_level, :id, :state, :inprogress, :writeset, :readset)
 
 class Database
+  include Helper
   attr_reader :default_isolation, :store, :transactions, :next_transaction_id
 
   def initialize(default_isolation)
@@ -221,6 +224,7 @@ class Database
 end
 
 class Connection
+  include Helper
   attr_reader :db, :tx
 
   def initialize(db, tx)
