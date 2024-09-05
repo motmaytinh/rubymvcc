@@ -4,7 +4,7 @@ require_relative 'main'
 class MyTest < Test::Unit::TestCase
 
   def test_read_uncommitted
-    database = Database.new(IsolationLevel::ReadUncommittedIsolation)
+    database = Database.new(IsolationLevel::READ_UNCOMMITTED)
 
     c1 = database.new_connection
     tx_id = c1.exec_command('begin', nil)
@@ -36,7 +36,7 @@ class MyTest < Test::Unit::TestCase
   end
 
   def test_read_committed
-    database = Database.new(IsolationLevel::ReadCommittedIsolation)
+    database = Database.new(IsolationLevel::READ_COMMITTED)
 
     c1 = database.new_connection
     c1.exec_command('begin', nil)
@@ -94,7 +94,7 @@ class MyTest < Test::Unit::TestCase
   end
 
   def test_repeatable_read
-    database = Database.new(IsolationLevel::RepeatableReadIsolation)
+    database = Database.new(IsolationLevel::REPEATABLE_READ)
 
     c1 = database.new_connection
     c1.exec_command('begin', nil)
@@ -164,7 +164,7 @@ class MyTest < Test::Unit::TestCase
   end
 
   def test_snapshot_isolation
-    database = Database.new(IsolationLevel::SnapshotIsolation)
+    database = Database.new(IsolationLevel::SNAPSHOT)
 
     c1 = database.new_connection
     c1.exec_command('begin', nil)
@@ -189,7 +189,7 @@ class MyTest < Test::Unit::TestCase
   end
 
   def test_serializable_isolation
-    database = Database.new(IsolationLevel::SerializableIsolation)
+    database = Database.new(IsolationLevel::SERIALIZABLE)
 
     c1 = database.new_connection
     c1.exec_command('begin', nil)
