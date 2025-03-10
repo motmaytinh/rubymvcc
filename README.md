@@ -1,6 +1,6 @@
 # rubymvcc
 
-A little, pedagogical implementation of mvcc and transaction isolation levels.
+A little, pedagogical implementation of mvcc and transaction isolation levels in Ruby.
 
 All credit goes to [Phil Eaton](https://notes.eatonphil.com/2024-05-16-mvcc.html).
 
